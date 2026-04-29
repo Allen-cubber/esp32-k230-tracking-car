@@ -1,11 +1,11 @@
 | Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-S2 | ESP32-S3 | ESP32-P4 | ESP32-H2 |
 | ----------------- | ----- | -------- | -------- | -------- | --------- | -------- | -------- | -------- | -------- | -------- |
 
-# Wi-Fi Station Example
+# 基于ESP32和K230的追踪小车
 
 (See the README.md file in the upper level 'examples' directory for more information about examples.)
 
-This example shows how to use the Wi-Fi Station functionality of the Wi-Fi driver of ESP for connecting to an Access Point.
+This project shows how to build a tracking car based on ESP32 and K230.
 
 ## How to use example
 
