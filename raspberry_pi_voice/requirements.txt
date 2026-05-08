@@ -1,0 +1,4 @@
+dashscope
+pygame
+websockets
+paho-mqtt

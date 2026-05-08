@@ -6,6 +6,8 @@ import os
 import ujson
 from media.media import *
 from time import *
+import network
+import socket
 import nncase_runtime as nn
 import ulab.numpy as np
 import time
@@ -20,90 +22,275 @@ from machine import PWM, FPIOA
 
 # 全局变量定义 / Global variable definition
 fr = None
-from libs.YbProtocol import YbProtocol
-from ybUtils.YbUart import YbUart
-
-uart = YbUart(baudrate=115200)
-pto = YbProtocol()
 
 
-# 只新增这个函数：给 ESP32 发纯文本 TRACK
-def send_track_line(valid, pan_deg, tilt_deg, face_x, face_y, face_w, face_h):
-    line = "TRACK,{},{:.2f},{:.2f},{:.1f},{:.1f},{:.1f},{:.1f}\n".format(
-        1 if valid else 0,
-        pan_deg,
-        tilt_deg,
-        face_x,
-        face_y,
-        face_w,
-        face_h
-    )
-    uart.send(line)
-    print(line)
+WIFI_SSID = "OnePlus13"
+WIFI_PASSWORD = "sukk3285"
+MQTT_BROKER = "10.179.231.220"
+MQTT_PORT = 1883
+MQTT_CLIENT_ID = "robot01-k230"
+MQTT_TOPIC_ROOT = "qrs"
+MQTT_DEVICE_ID = "robot01"
+
+mqtt_bridge = None
 
 
-uart_rx_line = ""
-
-
-def _uart_bytes_to_text(data):
-    if data is None:
-        return ""
-    if isinstance(data, bytes):
-        try:
-            return data.decode("utf-8")
-        except Exception:
-            return data.decode("utf-8", "ignore")
-    return str(data)
-
-
-def _uart_try_read_text():
+def now_ms():
     try:
-        if hasattr(uart, "any") and uart.any() <= 0:
-            return ""
+        return time.ticks_ms()
     except Exception:
-        pass
+        return int(time.time() * 1000)
 
-    for method_name in ("read", "recv", "readline"):
+
+class SocketMqttClient:
+    def __init__(self, client_id, host, port=1883, keepalive=30):
+        self.client_id = client_id
+        self.host = host
+        self.port = port
+        self.keepalive = keepalive
+        self.sock = None
+        self.callback = None
+        self.packet_id = 1
+
+    def set_callback(self, callback):
+        self.callback = callback
+
+    def _encode_remaining_len(self, value):
+        encoded = bytearray()
+        while True:
+            byte = value % 128
+            value //= 128
+            if value > 0:
+                byte |= 0x80
+            encoded.append(byte)
+            if value == 0:
+                break
+        return encoded
+
+    def _str_field(self, value):
+        if isinstance(value, str):
+            value = value.encode("utf-8")
+        return bytes([(len(value) >> 8) & 0xff, len(value) & 0xff]) + value
+
+    def _send_packet(self, packet_type, payload, timeout_s=None):
+        packet = bytes([packet_type]) + self._encode_remaining_len(len(payload)) + payload
+        if timeout_s is not None:
+            self.sock.settimeout(timeout_s)
+        sent = 0
+        while sent < len(packet):
+            n = self.sock.send(packet[sent:])
+            if not n:
+                raise OSError("mqtt socket send failed")
+            sent += n
+
+    def _read_exact(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise OSError("mqtt socket closed")
+            data += chunk
+        return data
+
+    def _read_remaining_len(self):
+        multiplier = 1
+        value = 0
+        while True:
+            encoded = self._read_exact(1)[0]
+            value += (encoded & 127) * multiplier
+            if (encoded & 128) == 0:
+                break
+            multiplier *= 128
+        return value
+
+    def connect(self):
+        addr = socket.getaddrinfo(self.host, self.port)[0][-1]
+        self.sock = socket.socket()
+        self.sock.settimeout(5)
+        self.sock.connect(addr)
+
+        variable_header = self._str_field("MQTT") + bytes([4, 2])
+        variable_header += bytes([(self.keepalive >> 8) & 0xff, self.keepalive & 0xff])
+        payload = self._str_field(self.client_id)
+        self._send_packet(0x10, variable_header + payload)
+
+        resp_type = self._read_exact(1)[0]
+        remaining_len = self._read_remaining_len()
+        resp = self._read_exact(remaining_len)
+        if resp_type != 0x20 or len(resp) < 2 or resp[1] != 0:
+            raise RuntimeError("MQTT connect failed")
+
+        self.sock.settimeout(0)
+
+    def subscribe(self, topic):
+        self.packet_id = (self.packet_id % 65535) + 1
+        payload = bytes([(self.packet_id >> 8) & 0xff, self.packet_id & 0xff])
+        payload += self._str_field(topic) + bytes([0])
+        self._send_packet(0x82, payload, timeout_s=0.2)
+        self.sock.settimeout(0)
+
+    def publish(self, topic, msg):
+        if isinstance(msg, str):
+            msg = msg.encode("utf-8")
+        payload = self._str_field(topic) + msg
+        self._send_packet(0x30, payload, timeout_s=0.2)
+        self.sock.settimeout(0)
+
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+        self.sock = None
+
+    def check_msg(self):
         try:
-            if hasattr(uart, method_name):
-                data = getattr(uart, method_name)()
-                return _uart_bytes_to_text(data)
-        except Exception:
-            pass
-    return ""
+            packet_type = self.sock.recv(1)
+        except OSError:
+            return
+        if not packet_type:
+            return
+
+        packet_type = packet_type[0]
+        remaining_len = self._read_remaining_len()
+        packet = self._read_exact(remaining_len)
+
+        if (packet_type & 0xf0) != 0x30 or len(packet) < 2:
+            return
+
+        topic_len = (packet[0] << 8) | packet[1]
+        topic = packet[2:2 + topic_len]
+        msg = packet[2 + topic_len:]
+        if self.callback:
+            self.callback(topic, msg)
 
 
-def poll_esp32_gimbal_command(pan_tilt):
-    global uart_rx_line
+class MqttBridge:
+    def __init__(self):
+        base = MQTT_TOPIC_ROOT.rstrip("/") + "/" + MQTT_DEVICE_ID
+        self.track_topic = base + "/track"
+        self.gimbal_topic = base + "/gimbal/request"
+        self.client = None
+        self.connected = False
+        self.last_connect_ms = 0
+        self.last_track_ms = 0
 
-    text = _uart_try_read_text()
-    if not text:
-        return
+    def connect_wifi(self):
+        wlan = network.WLAN(network.STA_IF)
+        try:
+            wlan.active(True)
+        except Exception as e:
+            print("WiFi active warning:", e)
 
-    for ch in text:
-        if ch == "\r":
-            continue
-        if ch == "\n":
-            line = uart_rx_line.strip()
-            uart_rx_line = ""
-            if line.startswith("GIMBAL,"):
-                parts = line.split(",")
-                action = parts[1].strip() if len(parts) > 1 else "stop"
-                try:
-                    pan_delta = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-                    tilt_delta = int(parts[3]) if len(parts) > 3 and parts[3] else 0
-                    duration_ms = int(parts[4]) if len(parts) > 4 and parts[4] else 0
-                except Exception:
-                    print("Bad ESP32 gimbal command:", line)
-                    continue
-                pan_tilt.handle_command(action, pan_delta, tilt_delta, duration_ms)
-                print("ESP32 gimbal command:", line)
-            continue
+        if (not wlan.isconnected()) or wlan.ifconfig()[0] == "0.0.0.0":
+            print("WiFi connecting:", WIFI_SSID)
+            wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+            start = time.time()
+            while (not wlan.isconnected()) or wlan.ifconfig()[0] == "0.0.0.0":
+                if time.time() - start > 30:
+                    raise RuntimeError("WiFi connect timeout, ifconfig={}".format(wlan.ifconfig()))
+                time.sleep(0.2)
+        print("WiFi connected:", wlan.ifconfig())
 
-        if len(uart_rx_line) < 128:
-            uart_rx_line += ch
-        else:
-            uart_rx_line = ""
+    def connect_mqtt(self):
+        if self.client:
+            self.client.close()
+            self.client = None
+        self.client = SocketMqttClient(MQTT_CLIENT_ID,
+                                       MQTT_BROKER,
+                                       port=MQTT_PORT,
+                                       keepalive=30)
+        self.client.set_callback(self._on_message)
+        self.client.connect()
+        self.client.subscribe(self.gimbal_topic)
+        self.connected = True
+        print("MQTT connected:", MQTT_BROKER, self.gimbal_topic)
+
+    def connect(self):
+        self.last_connect_ms = now_ms()
+        try:
+            self.connect_wifi()
+            self.connect_mqtt()
+        except Exception as e:
+            print("MQTT connect skipped:", e)
+            self.connected = False
+            if self.client:
+                self.client.close()
+                self.client = None
+
+    def reconnect_later(self):
+        if self.connected:
+            return
+        current = now_ms()
+        if current - self.last_connect_ms < 3000:
+            return
+        self.connect()
+
+    def _decode_text(self, value):
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return str(value)
+
+    def _on_message(self, topic, msg):
+        global fr
+        try:
+            payload = ujson.loads(self._decode_text(msg))
+            action = str(payload.get("action", "stop")).lower()
+            pan_delta = int(payload.get("pan_delta", 0))
+            tilt_delta = int(payload.get("tilt_delta", 0))
+            duration_ms = int(payload.get("duration_ms", 0))
+        except Exception as e:
+            print("Bad MQTT gimbal command:", e)
+            return
+
+        if fr:
+            fr.pan_tilt.handle_command(action, pan_delta, tilt_delta, duration_ms)
+            print("MQTT gimbal command:", payload)
+
+    def poll(self):
+        self.reconnect_later()
+        if not self.client:
+            return
+        try:
+            self.client.check_msg()
+        except Exception as e:
+            print("MQTT poll error:", e)
+            self.connected = False
+            self.client.close()
+            self.client = None
+
+    def publish_track(self, valid, pan_deg, tilt_deg, face_x, face_y, face_w, face_h):
+        current = now_ms()
+        if current - self.last_track_ms < 200:
+            return
+        self.last_track_ms = current
+
+        if not self.client:
+            self.reconnect_later()
+            return
+        payload = {
+            "valid": bool(valid),
+            "pan": float(pan_deg),
+            "tilt": float(tilt_deg),
+            "x": float(face_x),
+            "y": float(face_y),
+            "w": float(face_w),
+            "h": float(face_h),
+        }
+        try:
+            self.client.publish(self.track_topic, ujson.dumps(payload))
+            print("TRACK MQTT:", payload)
+        except Exception as e:
+            print("MQTT publish track failed:", e)
+            self.connected = False
+            self.client.close()
+            self.client = None
+
+
+def publish_track(valid, pan_deg, tilt_deg, face_x, face_y, face_w, face_h):
+    if mqtt_bridge:
+        mqtt_bridge.publish_track(valid, pan_deg, tilt_deg, face_x, face_y, face_w, face_h)
 
 
 # ==========================================
@@ -725,17 +912,15 @@ class FaceRecognition:
                 if match:
                     name_value = match.group(1)
                     score_value = match.group(2)
-                    pto_data = pto.get_face_recoginiton_data(x1, y1, w, h, name_value, score_value)
-                    uart.send(pto_data)
+                    print("face:", name_value, score_value)
                 else:
-                    pto_data = pto.get_face_recoginiton_data(x1, y1, w, h, recg_text, 0)
-                    uart.send(pto_data)
+                    print("face:", recg_text, 0)
 
         if self.pan_tilt.is_manual():
             self.pan_tilt.update_manual_motion()
 
             if target_face_center:
-                send_track_line(
+                publish_track(
                     True,
                     self.pan_tilt.pan_angle,
                     self.pan_tilt.tilt_angle,
@@ -745,7 +930,7 @@ class FaceRecognition:
                     float(target_face_wh[1])
                 )
             else:
-                send_track_line(
+                publish_track(
                     False,
                     self.pan_tilt.pan_angle,
                     self.pan_tilt.tilt_angle,
@@ -763,7 +948,7 @@ class FaceRecognition:
             self.last_pan_angle = self.pan_tilt.pan_angle
             self.last_tilt_angle = self.pan_tilt.tilt_angle
 
-            send_track_line(
+            publish_track(
                 True,
                 self.pan_tilt.pan_angle,
                 self.pan_tilt.tilt_angle,
@@ -775,7 +960,7 @@ class FaceRecognition:
         else:
             self.update_lost_search()
             # 没检测到任何脸时也发一条无目标状态
-            send_track_line(
+            publish_track(
                 False,
                 self.pan_tilt.pan_angle,
                 self.pan_tilt.tilt_angle,
@@ -790,7 +975,7 @@ class FaceRecognition:
 
 
 def exce_demo(pl):
-    global fr
+    global fr, mqtt_bridge
     display_mode = pl.display_mode
     rgb888p_size = pl.rgb888p_size
     display_size = pl.display_size
@@ -810,6 +995,9 @@ def exce_demo(pl):
     anchors = anchors.reshape((anchor_len, det_dim))
     face_recognition_threshold = 0.65
 
+    mqtt_bridge = MqttBridge()
+    mqtt_bridge.connect()
+
     fr = FaceRecognition(face_det_kmodel_path, face_reg_kmodel_path,
                         det_input_size=face_det_input_size,
                         reg_input_size=face_reg_input_size,
@@ -826,12 +1014,16 @@ def exce_demo(pl):
             with ScopedTiming("total", 1):
                 img = pl.get_frame()
                 det_boxes, recg_res = fr.run(img)
-                poll_esp32_gimbal_command(fr.pan_tilt)
+                mqtt_bridge.poll()
                 fr.draw_result(pl, det_boxes, recg_res)
                 pl.show_image()
                 gc.collect()
     except Exception as e:
-        print("人脸识别功能退出")
+        print("人脸识别功能退出:", e)
+        try:
+            sys.print_exception(e)
+        except Exception:
+            pass
     finally:
         exit_demo()
 

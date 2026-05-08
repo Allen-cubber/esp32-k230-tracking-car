@@ -3,8 +3,8 @@
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.portWin": "COM20",
-  "idf.currentSetup": "D:\\ESP-IDF\\.espressif\\v5.5.3\\esp-idf",
+  "idf.portWin": "COM8",
+  "idf.currentSetup": "D:\\.espressif\\v5.5.3\\esp-idf",
   "idf.buildPath": "${workspaceFolder}\\build",
   "idf.enableStatusBar": true,
   "idf.customExtraVars": {

@@ -13,8 +13,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "k230_uart.h"
 #include "motor_control.h"
+#include "robot_mqtt_client.h"
 
 typedef struct {
     char text[CONFIG_AI_CONTROL_INPUT_MAX_BYTES];
@@ -243,10 +243,10 @@ static void execute_gimbal_command(const cJSON *gimbal)
                           CONFIG_AI_CONTROL_GIMBAL_MAX_DELTA_DEG);
     duration_ms = clamp_int(duration_ms, 0, CONFIG_AI_CONTROL_MAX_DURATION_MS);
 
-    esp_err_t ret = k230_uart_send_gimbal_command(action,
-                                                  pan_delta,
-                                                  tilt_delta,
-                                                  (uint32_t)duration_ms);
+    esp_err_t ret = robot_mqtt_client_send_gimbal_command(action,
+                                                          pan_delta,
+                                                          tilt_delta,
+                                                          (uint32_t)duration_ms);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "send gimbal command failed: %s", esp_err_to_name(ret));
         return;
@@ -258,6 +258,217 @@ static void execute_gimbal_command(const cJSON *gimbal)
              pan_delta,
              tilt_delta,
              duration_ms);
+}
+
+#define DIRECT_ACTION_MAX_SPEED_PERCENT 50
+#define DIRECT_ACTION_MAX_DURATION_MS 3000
+#define DIRECT_ACTION_GIMBAL_MAX_DELTA_DEG 45
+
+static esp_err_t direct_action_error(char *error_buf,
+                                     size_t error_buf_size,
+                                     const char *error)
+{
+    if (error_buf != NULL && error_buf_size > 0) {
+        snprintf(error_buf, error_buf_size, "%s", error);
+    }
+    return ESP_ERR_INVALID_ARG;
+}
+
+static int direct_action_motion_speed(int speed_percent)
+{
+    int default_speed = clamp_int(CONFIG_AI_CONTROL_DEFAULT_SPEED_PERCENT,
+                                  1,
+                                  DIRECT_ACTION_MAX_SPEED_PERCENT);
+
+    speed_percent = clamp_int(speed_percent, 0, DIRECT_ACTION_MAX_SPEED_PERCENT);
+    if (speed_percent == 0) {
+        speed_percent = default_speed;
+    }
+
+    return speed_percent;
+}
+
+static int direct_action_motion_duration(int duration_ms)
+{
+    int default_duration = clamp_int(CONFIG_AI_CONTROL_DEFAULT_DURATION_MS,
+                                     CONFIG_AI_CONTROL_MIN_DURATION_MS,
+                                     DIRECT_ACTION_MAX_DURATION_MS);
+
+    duration_ms = clamp_int(duration_ms, 0, DIRECT_ACTION_MAX_DURATION_MS);
+    if (duration_ms == 0) {
+        duration_ms = default_duration;
+    }
+
+    return clamp_int(duration_ms,
+                     CONFIG_AI_CONTROL_MIN_DURATION_MS,
+                     DIRECT_ACTION_MAX_DURATION_MS);
+}
+
+static esp_err_t execute_direct_chassis_action(const char *name,
+                                               int speed_percent,
+                                               int duration_ms,
+                                               char *error_buf,
+                                               size_t error_buf_size)
+{
+    if (action_is(name, "stop")) {
+        hold_manual_mode();
+        motor_stop();
+        ESP_LOGI(TAG, "direct chassis stop");
+        return ESP_OK;
+    }
+
+    if (!action_is(name, "forward") &&
+        !action_is(name, "backward") &&
+        !action_is(name, "turn_left") &&
+        !action_is(name, "turn_right")) {
+        return direct_action_error(error_buf, error_buf_size, "unknown_action");
+    }
+
+    speed_percent = direct_action_motion_speed(speed_percent);
+    duration_ms = direct_action_motion_duration(duration_ms);
+    uint32_t pwm = speed_percent_to_pwm(speed_percent);
+
+    hold_manual_mode();
+    if (action_is(name, "forward")) {
+        motor_move_forward(pwm);
+    } else if (action_is(name, "backward")) {
+        motor_move_backward(pwm);
+    } else if (action_is(name, "turn_left")) {
+        motor_turn_left(pwm);
+    } else {
+        motor_turn_right(pwm);
+    }
+    start_timed_motion((uint32_t)duration_ms);
+
+    ESP_LOGI(TAG,
+             "direct chassis action=%s speed=%d%% pwm=%lu duration=%dms",
+             name,
+             speed_percent,
+             (unsigned long)pwm,
+             duration_ms);
+    return ESP_OK;
+}
+
+static esp_err_t execute_direct_mode_action(const char *name,
+                                            char *error_buf,
+                                            size_t error_buf_size)
+{
+    if (action_is(name, "hold")) {
+        hold_manual_mode();
+        motor_stop();
+        ESP_LOGI(TAG, "direct mode hold");
+        return ESP_OK;
+    }
+
+    if (action_is(name, "resume_follow")) {
+        motor_stop();
+        set_manual_mode(false);
+        ESP_LOGI(TAG, "direct mode resume follow");
+        return ESP_OK;
+    }
+
+    return direct_action_error(error_buf, error_buf_size, "unknown_action");
+}
+
+static esp_err_t execute_direct_gimbal_action(const char *name,
+                                              int pan_delta,
+                                              int tilt_delta,
+                                              int duration_ms,
+                                              char *error_buf,
+                                              size_t error_buf_size)
+{
+    int default_step = CONFIG_AI_CONTROL_GIMBAL_STEP_DEG;
+
+    if (!action_is(name, "nod") &&
+        !action_is(name, "shake") &&
+        !action_is(name, "center") &&
+        !action_is(name, "lock") &&
+        !action_is(name, "unlock")) {
+        return direct_action_error(error_buf, error_buf_size, "unknown_action");
+    }
+
+    if (action_is(name, "nod") && tilt_delta == 0) {
+        tilt_delta = default_step;
+    } else if (action_is(name, "shake") && pan_delta == 0) {
+        pan_delta = default_step;
+    }
+
+    pan_delta = clamp_int(pan_delta,
+                          -DIRECT_ACTION_GIMBAL_MAX_DELTA_DEG,
+                          DIRECT_ACTION_GIMBAL_MAX_DELTA_DEG);
+    tilt_delta = clamp_int(tilt_delta,
+                           -DIRECT_ACTION_GIMBAL_MAX_DELTA_DEG,
+                           DIRECT_ACTION_GIMBAL_MAX_DELTA_DEG);
+    duration_ms = clamp_int(duration_ms, 0, DIRECT_ACTION_MAX_DURATION_MS);
+
+    esp_err_t ret = robot_mqtt_client_send_gimbal_command(name,
+                                                          pan_delta,
+                                                          tilt_delta,
+                                                          (uint32_t)duration_ms);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "direct gimbal command failed: %s", esp_err_to_name(ret));
+        return direct_action_error(error_buf, error_buf_size, "gimbal_send_failed");
+    }
+
+    ESP_LOGI(TAG,
+             "direct gimbal action=%s pan_delta=%d tilt_delta=%d duration=%dms",
+             name,
+             pan_delta,
+             tilt_delta,
+             duration_ms);
+    return ESP_OK;
+}
+
+esp_err_t vehicle_ai_control_execute_action_payload(const cJSON *payload,
+                                                    char *error_buf,
+                                                    size_t error_buf_size)
+{
+    if (!cJSON_IsObject(payload)) {
+        return direct_action_error(error_buf, error_buf_size, "payload_not_object");
+    }
+
+    const cJSON *action = cJSON_GetObjectItemCaseSensitive(payload, "action");
+    if (!cJSON_IsObject(action)) {
+        return direct_action_error(error_buf, error_buf_size, "action_not_object");
+    }
+
+    const char *target = json_get_string(action, "target", "none");
+    const char *name = json_get_string(action, "name", "none");
+    int speed_percent = json_get_int(action, "speed", 0);
+    int duration_ms = json_get_int(action, "duration_ms", 0);
+    int pan_delta = json_get_int(action, "pan_delta_deg", 0);
+    int tilt_delta = json_get_int(action, "tilt_delta_deg", 0);
+
+    if (action_is(target, "none")) {
+        if (!action_is(name, "none")) {
+            return direct_action_error(error_buf, error_buf_size, "unknown_action");
+        }
+        ESP_LOGI(TAG, "direct action none");
+        return ESP_OK;
+    }
+
+    if (action_is(target, "chassis")) {
+        return execute_direct_chassis_action(name,
+                                             speed_percent,
+                                             duration_ms,
+                                             error_buf,
+                                             error_buf_size);
+    }
+
+    if (action_is(target, "mode")) {
+        return execute_direct_mode_action(name, error_buf, error_buf_size);
+    }
+
+    if (action_is(target, "gimbal")) {
+        return execute_direct_gimbal_action(name,
+                                            pan_delta,
+                                            tilt_delta,
+                                            duration_ms,
+                                            error_buf,
+                                            error_buf_size);
+    }
+
+    return direct_action_error(error_buf, error_buf_size, "unknown_target");
 }
 
 static char *extract_json_object(const char *text)

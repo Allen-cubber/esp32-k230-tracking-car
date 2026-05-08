@@ -15,9 +15,10 @@
 #include "nvs_flash.h"
 
 #include "deepseek_client.h"
-#include "k230_uart.h"
 #include "motor_control.h"
 #include "mpu6050.h"
+#include "robot_mqtt_client.h"
+#include "robot_track.h"
 #include "ultrasonic.h"
 #include "vehicle_ai_control.h"
 #include "wifi_connection.h"
@@ -125,7 +126,7 @@ static void follow_pid_reset(void)
     s_target_yaw_ready = false;
 }
 
-static bool follow_face_too_large(const k230_track_data_t *track)
+static bool follow_face_too_large(const robot_track_data_t *track)
 {
     return (track->face_w >= FOLLOW_FACE_STOP_WIDTH_PX) ||
            (track->face_h >= FOLLOW_FACE_STOP_HEIGHT_PX);
@@ -136,7 +137,7 @@ static bool follow_tilt_out_of_range(float tilt_deg)
     return (tilt_deg < FOLLOW_TILT_MIN_DEG) || (tilt_deg > FOLLOW_TILT_MAX_DEG);
 }
 
-static float follow_update_face_size_filter(const k230_track_data_t *track)
+static float follow_update_face_size_filter(const robot_track_data_t *track)
 {
     float face_size = fmaxf(track->face_w, track->face_h);
 
@@ -271,7 +272,7 @@ static bool obstacle_guard_should_stop(float distance_cm)
     return s_obstacle_hold;
 }
 
-static void follow_log_control_debug(const k230_track_data_t *track,
+static void follow_log_control_debug(const robot_track_data_t *track,
                                      const mpu6050_pose_t *pose,
                                      bool pose_ready,
                                      float ultrasonic_cm,
@@ -311,7 +312,7 @@ static void follow_log_control_debug(const k230_track_data_t *track,
              (long)right_speed);
 }
 
-static float follow_calculate_heading_error(const k230_track_data_t *track,
+static float follow_calculate_heading_error(const robot_track_data_t *track,
                                             const mpu6050_pose_t *pose,
                                             bool pose_ready)
 {
@@ -335,7 +336,7 @@ static float follow_calculate_heading_error(const k230_track_data_t *track,
     return normalize_angle_delta(s_target_yaw_deg - pose->yaw_deg);
 }
 
-static void follow_target_control(const k230_track_data_t *track,
+static void follow_target_control(const robot_track_data_t *track,
                                   const mpu6050_pose_t *pose,
                                   bool pose_ready,
                                   float ultrasonic_cm,
@@ -428,7 +429,6 @@ static void follow_target_control(const k230_track_data_t *track,
 
 void app_main(void)
 {
-    bool uart_ready = false;
     bool mpu_ready = false;
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -463,21 +463,20 @@ void app_main(void)
     ultrasonic_init();
     ESP_LOGI(TAG, "after ultrasonic_init");
 
-    ESP_LOGI(TAG, "before k230_uart_init");
-    ret = k230_uart_init();
-    if (ret == ESP_OK) {
-        uart_ready = true;
-        ESP_LOGI(TAG, "after k230_uart_init");
-    } else {
-        ESP_LOGE(TAG, "k230_uart_init failed: %s", esp_err_to_name(ret));
-    }
-
     ESP_LOGI(TAG, "before vehicle_ai_control_init");
     ret = vehicle_ai_control_init();
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "after vehicle_ai_control_init");
     } else {
         ESP_LOGE(TAG, "vehicle_ai_control_init failed: %s", esp_err_to_name(ret));
+    }
+
+    ESP_LOGI(TAG, "before robot_mqtt_client_start");
+    ret = robot_mqtt_client_start();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "after robot_mqtt_client_start");
+    } else {
+        ESP_LOGE(TAG, "robot_mqtt_client_start failed: %s", esp_err_to_name(ret));
     }
 
     ESP_LOGI(TAG, "before mpu6050_init");
@@ -504,14 +503,14 @@ void app_main(void)
     const TickType_t track_timeout = pdMS_TO_TICKS(FOLLOW_TRACK_TIMEOUT_MS);
     const float sample_dt_s = CONFIG_MPU6050_SAMPLE_PERIOD_MS / 1000.0f;
 
-    k230_track_data_t last_track = {0};
+    robot_track_data_t last_track = {0};
     TickType_t last_track_tick = 0;
 
     ESP_LOGI(CTRL_TAG, "follow mode enabled");
 
     while (1) {
         mpu6050_pose_t pose = {0};
-        k230_track_data_t track = {0};
+        robot_track_data_t track = {0};
         bool pose_ready = false;
         float ultrasonic_cm = obstacle_update_distance();
 
@@ -529,31 +528,18 @@ void app_main(void)
             }
         }
 
-        if (uart_ready) {
-            for (int packet_index = 0; packet_index < 4; ++packet_index) {
-                k230_uart_packet_t packet = {0};
-
-                if (!k230_uart_read_packet(&packet)) {
-                    break;
-                }
-
-                if (packet.type == K230_UART_PACKET_TRACK) {
-                    track = packet.track;
-                    last_track = track;
-                    last_track_tick = xTaskGetTickCount();
-                    ESP_LOGD(TRACK_TAG,
-                             "valid=%d pan=%.2f tilt=%.2f face=(%.1f, %.1f, %.1f, %.1f)",
-                             track.valid,
-                             track.pan_deg,
-                             track.tilt_deg,
-                             track.face_x,
-                             track.face_y,
-                             track.face_w,
-                             track.face_h);
-                } else if (packet.type == K230_UART_PACKET_TEXT) {
-                    vehicle_ai_control_submit_text(packet.text);
-                }
-            }
+        if (robot_mqtt_client_read_track(&track)) {
+            last_track = track;
+            last_track_tick = xTaskGetTickCount();
+            ESP_LOGD(TRACK_TAG,
+                     "valid=%d pan=%.2f tilt=%.2f face=(%.1f, %.1f, %.1f, %.1f)",
+                     track.valid,
+                     track.pan_deg,
+                     track.tilt_deg,
+                     track.face_x,
+                     track.face_y,
+                     track.face_w,
+                     track.face_h);
         }
 
         if ((last_track_tick != 0) && ((xTaskGetTickCount() - last_track_tick) > track_timeout)) {
