@@ -6,7 +6,7 @@ from .asr import XfAsrClient
 from .config import AppConfig
 from .llm import ActionPlanner
 from .robot_mqtt import RobotMqttClient
-from .schema import is_stop_request, make_stop_payload, should_dispatch
+from .schema import is_stop_request, make_stop_payload, match_quick_action, should_dispatch
 from .speech import SpeechEngine
 
 
@@ -96,6 +96,15 @@ class VoiceCarAssistant:
             print(f"[本地安全] 停止请求 -> {payload}")
             ack = self._dispatch_payload(payload)
             spoken = payload["voice"]["text"]
+            ack_text = self._ack_text(ack)
+            self.speech.speak_async("，".join(part for part in (spoken, ack_text) if part))
+            return
+
+        quick_payload = match_quick_action(clean_text)
+        if quick_payload:
+            print(f"[本地快捷] {clean_text} -> {quick_payload}")
+            ack = self._dispatch_payload(quick_payload)
+            spoken = quick_payload["voice"]["text"]
             ack_text = self._ack_text(ack)
             self.speech.speak_async("，".join(part for part in (spoken, ack_text) if part))
             return

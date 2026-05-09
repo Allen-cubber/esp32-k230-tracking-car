@@ -12,6 +12,23 @@ ALLOWED_ACTIONS = {
 ALLOWED_EMOTIONS = {"neutral", "happy", "alert", "confused", "sad"}
 STOP_WORDS = ("停下", "停止", "别动", "不要动", "刹车", "危险", "急停", "站住")
 
+QUICK_DEFAULT_SPEED = 35
+QUICK_DEFAULT_DURATION_MS = 1000
+
+QUICK_ACTION_RULES = (
+    ("mode", "resume_follow", ("开始跟随", "继续跟随", "恢复跟随", "跟着我", "跟我走", "跟随我", "追踪我", "继续追踪"), "好的，开始跟随。"),
+    ("mode", "hold", ("暂停跟随", "停止跟随", "别跟了", "不要跟了", "保持不动", "原地待命", "待命"), "好的，保持不动。"),
+    ("gimbal", "center", ("云台回中", "回中", "回正", "看中间", "看前面"), "好的，云台回中。"),
+    ("gimbal", "lock", ("锁定云台", "云台锁定", "镜头锁定", "锁住镜头"), "好的，已锁定云台。"),
+    ("gimbal", "unlock", ("解锁云台", "云台解锁", "恢复云台", "恢复镜头"), "好的，已解锁云台。"),
+    ("gimbal", "nod", ("点头", "点点头"), "好的。"),
+    ("gimbal", "shake", ("摇头", "摇摇头"), "好的。"),
+    ("chassis", "turn_left", ("左转", "向左转", "往左转"), "好的，左转。"),
+    ("chassis", "turn_right", ("右转", "向右转", "往右转"), "好的，右转。"),
+    ("chassis", "backward", ("后退", "倒车", "往后退", "向后退", "退后"), "好的，后退。"),
+    ("chassis", "forward", ("前进", "向前", "往前", "往前走", "向前走", "前走"), "好的，前进。"),
+)
+
 
 def clamp_int(value: Any, min_value: int, max_value: int, default: int = 0) -> int:
     try:
@@ -40,6 +57,30 @@ def make_stop_payload(reply: str = "好的，已停止。") -> Dict[str, Any]:
     }
 
 
+def make_action_payload(
+    target: str,
+    name: str,
+    reply: str,
+    emotion: str = "neutral",
+    speed: int = 0,
+    duration_ms: int = 0,
+    pan_delta_deg: int = 0,
+    tilt_delta_deg: int = 0,
+) -> Dict[str, Any]:
+    return {
+        "emotion": emotion,
+        "action": {
+            "target": target,
+            "name": name,
+            "speed": clamp_int(speed, 0, 50),
+            "duration_ms": clamp_int(duration_ms, 0, 3000),
+            "pan_delta_deg": clamp_int(pan_delta_deg, -45, 45),
+            "tilt_delta_deg": clamp_int(tilt_delta_deg, -45, 45),
+        },
+        "voice": {"text": reply},
+    }
+
+
 def make_none_payload(reply: str = "好的。") -> Dict[str, Any]:
     return {
         "emotion": "neutral",
@@ -53,6 +94,42 @@ def make_none_payload(reply: str = "好的。") -> Dict[str, Any]:
         },
         "voice": {"text": reply},
     }
+
+
+def _compact_text(text: str) -> str:
+    drop_chars = " \t\r\n，。！？!?、,.；;：:\"'“”‘’（）()【】[]"
+    return "".join(ch for ch in text.strip() if ch not in drop_chars)
+
+
+def match_quick_action(text: str) -> Optional[Dict[str, Any]]:
+    compact = _compact_text(text)
+    if not compact:
+        return None
+
+    for target, name, phrases, reply in QUICK_ACTION_RULES:
+        if not any(phrase in compact for phrase in phrases):
+            continue
+
+        speed = 0
+        duration_ms = 0
+        emotion = "neutral"
+        if target == "chassis":
+            speed = QUICK_DEFAULT_SPEED
+            duration_ms = QUICK_DEFAULT_DURATION_MS
+            emotion = "happy"
+        elif target == "mode" and name == "resume_follow":
+            emotion = "happy"
+
+        return make_action_payload(
+            target=target,
+            name=name,
+            reply=reply,
+            emotion=emotion,
+            speed=speed,
+            duration_ms=duration_ms,
+        )
+
+    return None
 
 
 def extract_json_object(text: str) -> Optional[str]:
