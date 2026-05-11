@@ -32,6 +32,10 @@ MQTT_CLIENT_ID = "robot01-k230"
 MQTT_TOPIC_ROOT = "qrs"
 MQTT_DEVICE_ID = "robot01"
 
+TRACK_PUBLISH_INTERVAL_MS = 80
+TRACK_LOG_INTERVAL_MS = 1000
+FRAME_TIMING_DEBUG = 0
+
 mqtt_bridge = None
 
 
@@ -175,6 +179,7 @@ class MqttBridge:
         self.connected = False
         self.last_connect_ms = 0
         self.last_track_ms = 0
+        self.last_track_log_ms = 0
 
     def connect_wifi(self):
         wlan = network.WLAN(network.STA_IF)
@@ -262,7 +267,7 @@ class MqttBridge:
 
     def publish_track(self, valid, pan_deg, tilt_deg, face_x, face_y, face_w, face_h):
         current = now_ms()
-        if current - self.last_track_ms < 200:
+        if current - self.last_track_ms < TRACK_PUBLISH_INTERVAL_MS:
             return
         self.last_track_ms = current
 
@@ -280,7 +285,9 @@ class MqttBridge:
         }
         try:
             self.client.publish(self.track_topic, ujson.dumps(payload))
-            print("TRACK MQTT:", payload)
+            if current - self.last_track_log_ms >= TRACK_LOG_INTERVAL_MS:
+                self.last_track_log_ms = current
+                print("TRACK MQTT:", payload)
         except Exception as e:
             print("MQTT publish track failed:", e)
             self.connected = False
@@ -311,11 +318,11 @@ class PanTilt:
         self.pan_angle = 90.0
         self.tilt_angle = 90.0
 
-        self.kp_x = 0.025
-        self.kp_y = 0.025
-        self.kd_x = 0.01
-        self.kd_y = 0.01
-        self.deadzone = 45
+        self.kp_x = 0.05
+        self.kp_y = 0.035
+        self.kd_x = 0.018
+        self.kd_y = 0.013
+        self.deadzone = 35
 
         self.prev_error_x = 0
         self.prev_error_y = 0
@@ -1011,7 +1018,7 @@ def exce_demo(pl):
 
     try:
         while True:
-            with ScopedTiming("total", 1):
+            with ScopedTiming("total", FRAME_TIMING_DEBUG):
                 img = pl.get_frame()
                 det_boxes, recg_res = fr.run(img)
                 mqtt_bridge.poll()
