@@ -124,6 +124,8 @@ class XfAsrClient:
                 "sox -t raw -r 48000 -c 2 -b 16 -e signed-integer - "
                 "-t raw -r 16000 -c 1 -b 16 -e signed-integer -"
             )
+            if self.config.audio_filter:
+                cmd = f"{cmd} {self.config.audio_filter}"
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             print(f"\n[状态: {status_label}] 正在听...")
 
@@ -138,6 +140,7 @@ class XfAsrClient:
                 voice_hold_until = 0.0
                 last_text_update = 0.0
                 speech_started = self.config.asr_rms_threshold <= 0
+                max_rms = 0
 
                 while time.monotonic() < window_deadline:
                     data = proc.stdout.read(1280)
@@ -150,6 +153,7 @@ class XfAsrClient:
 
                     now = time.monotonic()
                     rms = self._pcm_rms(data)
+                    max_rms = max(max_rms, rms)
                     if speech_started:
                         pass
                     elif rms >= self.config.asr_rms_threshold:
@@ -199,6 +203,10 @@ class XfAsrClient:
                         print(f"\r[识别]: {full_text}", end="", flush=True)
                     if res.get("header", {}).get("status") == 2:
                         break
+
+                if self.config.asr_min_accept_rms > 0 and max_rms < self.config.asr_min_accept_rms:
+                    print(f"\n[ASR] ignored low-rms speech max={max_rms} < {self.config.asr_min_accept_rms}")
+                    return ""
 
                 return full_text.replace("。", "").strip()
             finally:

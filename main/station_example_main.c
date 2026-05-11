@@ -17,6 +17,8 @@
 #include "deepseek_client.h"
 #include "motor_control.h"
 #include "mpu6050.h"
+#include "robot_emotion_ui.h"
+#include "robot_lcd.h"
 #include "robot_mqtt_client.h"
 #include "robot_track.h"
 #include "ultrasonic.h"
@@ -354,6 +356,7 @@ static void follow_target_control(const robot_track_data_t *track,
 
     if (!track->valid) {
         ESP_LOGI(CTRL_TAG, "target lost -> stop");
+        robot_emotion_ui_set_status(ROBOT_EMOTION_CONFUSED, "LOST");
         follow_pid_reset();
         motor_stop();
         return;
@@ -366,6 +369,7 @@ static void follow_target_control(const robot_track_data_t *track,
                  track->face_h,
                  FOLLOW_FACE_STOP_WIDTH_PX,
                  FOLLOW_FACE_STOP_HEIGHT_PX);
+        robot_emotion_ui_set_status(ROBOT_EMOTION_ALERT, "TOO CLOSE");
         follow_pid_reset();
         motor_stop();
         return;
@@ -377,6 +381,7 @@ static void follow_target_control(const robot_track_data_t *track,
                  track->tilt_deg,
                  FOLLOW_TILT_MIN_DEG,
                  FOLLOW_TILT_MAX_DEG);
+        robot_emotion_ui_set_status(ROBOT_EMOTION_ALERT, "TILT LIMIT");
         follow_pid_reset();
         motor_stop();
         return;
@@ -425,6 +430,7 @@ static void follow_target_control(const robot_track_data_t *track,
                              right_speed);
 
     motor_set_differential(left_speed, right_speed);
+    robot_emotion_ui_set_status(ROBOT_EMOTION_HAPPY, "FOLLOW");
 }
 
 void app_main(void)
@@ -439,6 +445,20 @@ void app_main(void)
 
     if (CONFIG_LOG_MAXIMUM_LEVEL > CONFIG_LOG_DEFAULT_LEVEL) {
         esp_log_level_set("wifi", CONFIG_LOG_MAXIMUM_LEVEL);
+    }
+
+    ESP_LOGI(TAG, "before robot_lcd_init");
+    ret = robot_lcd_init();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "after robot_lcd_init");
+        ret = robot_emotion_ui_init();
+        if (ret == ESP_OK) {
+            robot_emotion_ui_set_status(ROBOT_EMOTION_NEUTRAL, "BOOT");
+        } else {
+            ESP_LOGW(TAG, "robot_emotion_ui_init failed: %s", esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGW(TAG, "robot_lcd_init failed: %s", esp_err_to_name(ret));
     }
 
     ESP_LOGI(TAG, "before wifi_connection_start");
@@ -547,10 +567,13 @@ void app_main(void)
         }
 
         if (obstacle_guard_should_stop(ultrasonic_cm)) {
+            robot_emotion_ui_set_status(ROBOT_EMOTION_ALERT, "OBSTACLE");
             ESP_LOGD(CTRL_TAG, "obstacle hold, ultrasonic=%.2f cm", ultrasonic_cm);
         } else if (vehicle_ai_control_is_manual_mode()) {
+            robot_emotion_ui_set_status(ROBOT_EMOTION_NEUTRAL, "HOLD");
             ESP_LOGD(CTRL_TAG, "AI manual mode active, follow control paused");
         } else if (last_track_tick == 0) {
+            robot_emotion_ui_set_status(ROBOT_EMOTION_CONFUSED, "WAIT TRACK");
             follow_pid_reset();
             motor_stop();
             ESP_LOGI(CTRL_TAG, "waiting first track packet");

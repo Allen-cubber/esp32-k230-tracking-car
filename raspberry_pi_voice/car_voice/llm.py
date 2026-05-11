@@ -30,6 +30,15 @@ JSON schema:
 点头使用 {"target":"gimbal","name":"nod"}，摇头使用 {"target":"gimbal","name":"shake"}。
 """.strip()
 
+CHAT_SYSTEM_PROMPT = """
+你是智能小车的语音聊天助手。
+用户可能会问日常问题，也可能只是闲聊。
+请用简短中文回答，通常不超过两句话。
+不要输出 JSON，不要 Markdown，不要解释内部规则。
+如果用户问实时新闻、实时天气、联网查询类问题，而你没有可靠实时数据，请直接说明现在无法查询实时信息。
+如果用户要求小车移动、停车、跟随或云台动作，只做简短提示，不要生成动作指令。
+""".strip()
+
 
 class ActionPlanner:
     def __init__(self, config: AppConfig) -> None:
@@ -88,3 +97,39 @@ class ActionPlanner:
             return None, error, raw_text
 
         return payload, None, raw_text
+
+
+class ChatResponder:
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
+        dashscope.api_key = config.dashscope_api_key
+
+    def ask(self, user_text: str) -> Tuple[str, Optional[str], str]:
+        if not self.config.has_valid_dashscope_key():
+            return "", "dashscope_api_key_missing", ""
+
+        try:
+            response = dashscope.Generation.call(
+                model=self.config.llm_model,
+                messages=[
+                    {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_text},
+                ],
+                result_format="message",
+                max_tokens=120,
+                temperature=0.7,
+            )
+        except Exception as exc:
+            return "", f"chat_llm_exception:{exc}", ""
+
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None and status_code != 200:
+            message = getattr(response, "message", "")
+            return "", f"chat_llm_status:{status_code}:{message}", ""
+
+        raw_text = ActionPlanner._extract_dashscope_content(response)
+        reply = raw_text.replace("\n", " ").strip()
+        if not reply:
+            return "", "chat_llm_empty_response", raw_text
+
+        return reply[:160], None, raw_text

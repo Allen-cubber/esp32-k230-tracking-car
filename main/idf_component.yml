@@ -1,4 +1,10 @@
 dependencies:
+  espressif/esp_lvgl_port:
+    version: "^2.4.0"
+  lvgl/lvgl:
+    version: "^8.4.0"
+  waveshare/esp_lcd_st7735:
+    version: "^1.0.1"
   espressif/esp_wifi_remote:
     version: ">=0.10,<2.0"
     rules:

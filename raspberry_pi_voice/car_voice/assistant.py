@@ -4,9 +4,15 @@ from typing import Dict
 
 from .asr import XfAsrClient
 from .config import AppConfig
-from .llm import ActionPlanner
+from .llm import ActionPlanner, ChatResponder
 from .robot_mqtt import RobotMqttClient
-from .schema import is_stop_request, make_stop_payload, match_quick_action, should_dispatch
+from .schema import (
+    is_control_intent,
+    is_stop_request,
+    make_stop_payload,
+    match_quick_action,
+    should_dispatch,
+)
 from .speech import SpeechEngine
 
 
@@ -22,6 +28,7 @@ class VoiceCarAssistant:
         self.robot = RobotMqttClient(config)
         self.speech = SpeechEngine(config)
         self.planner = ActionPlanner(config)
+        self.chat = ChatResponder(config)
         self.asr = XfAsrClient(config)
         if config.always_active:
             self._refresh_active_deadline()
@@ -109,9 +116,21 @@ class VoiceCarAssistant:
             self.speech.speak_async("，".join(part for part in (spoken, ack_text) if part))
             return
 
+        if not is_control_intent(clean_text):
+            reply, error, raw_reply = self.chat.ask(clean_text)
+            if raw_reply:
+                print(f"[聊天LLM] {raw_reply}")
+            if error or not reply:
+                print(f"[聊天失败] {error}")
+                self.speech.speak_async("这个问题我现在回答不了")
+                return
+            print(f"[聊天] {reply}")
+            self.speech.speak_async(reply)
+            return
+
         payload, error, raw_reply = self.planner.ask(clean_text)
         if raw_reply:
-            print(f"[LLM] {raw_reply}")
+            print(f"[动作LLM] {raw_reply}")
 
         if error or payload is None:
             print(f"[解析失败] {error}")

@@ -7,6 +7,7 @@
 #include "cJSON.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include "robot_emotion_ui.h"
 #include "vehicle_ai_control.h"
 
 static const char *TAG = "robot_mqtt";
@@ -135,6 +136,36 @@ static void publish_ack(const char *request_id,
     cJSON_free(text);
 }
 
+static void show_request_emotion(const cJSON *payload, esp_err_t action_ret, const char *error)
+{
+    if (!cJSON_IsObject(payload)) {
+        return;
+    }
+
+    char status[32] = {0};
+    const char *emotion = json_get_string(payload, "emotion", "neutral");
+    const cJSON *action = cJSON_GetObjectItemCaseSensitive(payload, "action");
+
+    if (cJSON_IsObject(action)) {
+        const char *target = json_get_string(action, "target", "");
+        const char *name = json_get_string(action, "name", "");
+        if (target[0] != '\0' && name[0] != '\0') {
+            snprintf(status, sizeof(status), "%s:%s", target, name);
+        }
+    }
+
+    if (action_ret != ESP_OK) {
+        robot_emotion_ui_set_command("alert",
+                                     error != NULL && error[0] != '\0' ? error : "cmd failed",
+                                     2600);
+        return;
+    }
+
+    robot_emotion_ui_set_command(emotion,
+                                 status[0] != '\0' ? status : "cmd ok",
+                                 2200);
+}
+
 static void handle_request_message(const char *message)
 {
     char error[64] = {0};
@@ -161,6 +192,7 @@ static void handle_request_message(const char *message)
 
     const cJSON *payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
     ret = vehicle_ai_control_execute_action_payload(payload, error, sizeof(error));
+    show_request_emotion(payload, ret, error);
     publish_ack(request_id, cmd, ret == ESP_OK, ret == ESP_OK ? "" : error);
 
     cJSON_Delete(root);

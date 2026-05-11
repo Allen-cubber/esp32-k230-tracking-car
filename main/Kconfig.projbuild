@@ -107,6 +107,107 @@ menu "Example Configuration"
         help
             MQTT keepalive interval.
 
+    config ROBOT_LCD_ENABLE
+        bool "Enable ST7735 LVGL emotion LCD"
+        default y
+        help
+            Enable the 1.8-inch 128x160 ST7735 SPI LCD and LVGL emotion UI.
+
+    config ROBOT_LCD_SPI_HOST
+        int "LCD SPI host number"
+        depends on ROBOT_LCD_ENABLE
+        range 2 3
+        default 2
+        help
+            ESP32-S3 SPI host number. 2 maps to SPI2_HOST.
+
+    config ROBOT_LCD_SPI_CLOCK_HZ
+        int "LCD SPI clock frequency"
+        depends on ROBOT_LCD_ENABLE
+        range 1000000 40000000
+        default 20000000
+
+    config ROBOT_LCD_H_RES
+        int "LCD horizontal resolution"
+        depends on ROBOT_LCD_ENABLE
+        range 1 320
+        default 128
+
+    config ROBOT_LCD_V_RES
+        int "LCD vertical resolution"
+        depends on ROBOT_LCD_ENABLE
+        range 1 320
+        default 160
+
+    config ROBOT_LCD_SCLK_GPIO
+        int "LCD SPI SCLK GPIO"
+        depends on ROBOT_LCD_ENABLE
+        range 0 48
+        default 14
+
+    config ROBOT_LCD_MOSI_GPIO
+        int "LCD SPI MOSI GPIO"
+        depends on ROBOT_LCD_ENABLE
+        range 0 48
+        default 11
+
+    config ROBOT_LCD_CS_GPIO
+        int "LCD SPI CS GPIO"
+        depends on ROBOT_LCD_ENABLE
+        range 0 48
+        default 10
+
+    config ROBOT_LCD_DC_GPIO
+        int "LCD D/C GPIO"
+        depends on ROBOT_LCD_ENABLE
+        range 0 48
+        default 9
+
+    config ROBOT_LCD_RST_GPIO
+        int "LCD reset GPIO"
+        depends on ROBOT_LCD_ENABLE
+        range -1 48
+        default 21
+        help
+            Set to -1 if the LCD reset pin is tied to power-on reset.
+
+    config ROBOT_LCD_BL_GPIO
+        int "LCD backlight GPIO"
+        depends on ROBOT_LCD_ENABLE
+        range -1 48
+        default 8
+        help
+            Set to -1 if the backlight is tied to 3.3V or controlled externally.
+
+    config ROBOT_LCD_BL_ON_LEVEL
+        int "LCD backlight ON level"
+        depends on ROBOT_LCD_ENABLE
+        range 0 1
+        default 1
+
+    config ROBOT_LCD_X_GAP
+        int "LCD X gap offset"
+        depends on ROBOT_LCD_ENABLE
+        range 0 16
+        default 0
+        help
+            Adjust if the picture is shifted horizontally on ST7735 variants.
+
+    config ROBOT_LCD_Y_GAP
+        int "LCD Y gap offset"
+        depends on ROBOT_LCD_ENABLE
+        range 0 16
+        default 0
+        help
+            Adjust if the picture is shifted vertically on ST7735 variants.
+
+    config ROBOT_LCD_INVERT_COLOR
+        bool "Invert ST7735 colors"
+        depends on ROBOT_LCD_ENABLE
+        default y
+        help
+            Many ST7735 modules need inversion enabled for normal colors.
+
     config DEEPSEEK_API_KEY
         string "DeepSeek API Key"
         default ""

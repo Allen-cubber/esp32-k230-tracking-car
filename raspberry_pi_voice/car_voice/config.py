@@ -54,6 +54,8 @@ class AppConfig:
     asr_voice_hold_s: float
     asr_no_update_timeout_s: float
     asr_min_listen_s: float
+    asr_min_accept_rms: int
+    audio_filter: str
     tts_cooldown_s: float
     tts_enable: bool
     mqtt_host: str
@@ -88,6 +90,8 @@ class AppConfig:
             asr_voice_hold_s=float(os.getenv("ASR_VOICE_HOLD_S", "0.5")),
             asr_no_update_timeout_s=float(os.getenv("ASR_NO_UPDATE_TIMEOUT_S", "1.2")),
             asr_min_listen_s=float(os.getenv("ASR_MIN_LISTEN_S", "1.0")),
+            asr_min_accept_rms=max(0, int(os.getenv("ASR_MIN_ACCEPT_RMS", "0"))),
+            audio_filter=os.getenv("AUDIO_FILTER", "").strip(),
             tts_cooldown_s=float(os.getenv("TTS_COOLDOWN_S", "0.6")),
             tts_enable=_bool_env("TTS_ENABLE", True),
             mqtt_host=os.getenv("MQTT_HOST", "127.0.0.1"),
