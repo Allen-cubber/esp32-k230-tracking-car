@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1116">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="小车状态">
+  <title>追踪小车实时状态</title>
+  <link rel="manifest" href="manifest.webmanifest?v=apk-local1">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css?v=apk-local1">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>追踪小车实时状态</h1>
+        <p id="topicLine">等待连接...</p>
+      </div>
+      <div class="status-strip">
+        <span id="wsBadge" class="badge offline">WebSocket</span>
+        <span id="mqttBadge" class="badge offline">MQTT</span>
+        <span id="espBadge" class="badge offline">ESP32</span>
+      </div>
+    </header>
+
+    <section class="summary-grid app-view active" data-view="status">
+      <article class="metric primary">
+        <span class="label">车辆状态</span>
+        <strong id="stateValue">--</strong>
+        <span id="modeValue" class="hint">--</span>
+      </article>
+      <article class="metric">
+        <span class="label">超声波距离</span>
+        <strong><span id="distanceValue">--</span><small>cm</small></strong>
+        <div class="bar"><span id="distanceBar"></span></div>
+      </article>
+      <article class="metric">
+        <span class="label">左轮速度</span>
+        <strong><span id="leftSpeedValue">--</span><small>pps</small></strong>
+        <span id="leftCmdValue" class="hint">cmd --</span>
+      </article>
+      <article class="metric">
+        <span class="label">右轮速度</span>
+        <strong><span id="rightSpeedValue">--</span><small>pps</small></strong>
+        <span id="rightCmdValue" class="hint">cmd --</span>
+      </article>
+    </section>
+
+    <section class="layout">
+      <section class="panel telemetry-panel app-view" data-view="charts">
+        <div class="panel-title">
+          <h2>实时曲线</h2>
+          <span id="ageValue">--</span>
+        </div>
+        <canvas id="chartCanvas" width="960" height="360"></canvas>
+        <div class="legend">
+          <span><i class="line speed"></i>平均轮速</span>
+          <span><i class="line distance"></i>距离</span>
+          <span><i class="line yaw"></i>Yaw</span>
+        </div>
+      </section>
+
+      <section class="panel pose-panel app-view active" data-view="status">
+        <div class="panel-title">
+          <h2>角度与追踪</h2>
+          <span id="trackValue">--</span>
+        </div>
+        <div class="pose-grid">
+          <div class="dial">
+            <canvas id="yawCanvas" width="220" height="220"></canvas>
+            <span>Yaw <b id="yawValue">--</b></span>
+          </div>
+          <div class="angles">
+            <p><span>Yaw Rate</span><b id="yawRateValue">--</b><small>dps</small></p>
+            <p><span>Pan</span><b id="panValue">--</b><small>deg</small></p>
+            <p><span>Tilt</span><b id="tiltValue">--</b><small>deg</small></p>
+            <p><span>Heading Err</span><b id="headingValue">--</b><small>deg</small></p>
+            <p><span>Turn Output</span><b id="turnValue">--</b></p>
+          </div>
+        </div>
+        <canvas id="trackCanvas" width="480" height="300"></canvas>
+      </section>
+
+      <section class="panel control-panel app-view" data-view="control">
+        <div class="panel-title">
+          <h2>快速控制</h2>
+          <button id="installButton" class="ghost" type="button" hidden>安装</button>
+          <span id="ackValue">--</span>
+        </div>
+        <div class="control-pad">
+          <button data-action="forward">前进</button>
+          <button data-action="turn_left">左转</button>
+          <button data-action="stop" class="danger">急停</button>
+          <button data-action="turn_right">右转</button>
+          <button data-action="backward">后退</button>
+        </div>
+        <div class="mode-actions">
+          <button data-mode="resume_follow">恢复跟随</button>
+          <button data-mode="hold">保持</button>
+          <button data-gimbal="center">云台回中</button>
+        </div>
+        <label class="slider">
+          <span>速度 <b id="speedLabel">35</b>%</span>
+          <input id="speedInput" type="range" min="5" max="50" value="35">
+        </label>
+      </section>
+
+      <section class="panel pid-panel app-view" data-view="control">
+        <div class="panel-title">
+          <h2>底盘 PID</h2>
+          <span id="pidAckValue">等待同步</span>
+        </div>
+        <div class="pid-grid">
+          <label><span>Kp</span><input id="pidKp" type="number" step="0.01" min="0" max="10" value="0.65"></label>
+          <label><span>Ki</span><input id="pidKi" type="number" step="0.01" min="0" max="10" value="0.18"></label>
+          <label><span>Kd</span><input id="pidKd" type="number" step="0.01" min="0" max="10" value="0"></label>
+          <label><span>目标 PPS</span><input id="pidTargetMax" type="number" step="100" min="200" max="8000" value="3000"></label>
+          <label><span>积分限幅</span><input id="pidIntegralLimit" type="number" step="100" min="0" max="20000" value="4000"></label>
+          <label><span>修正限幅</span><input id="pidCorrectionLimit" type="number" step="100" min="0" max="8191" value="2200"></label>
+          <label><span>最小 PWM</span><input id="pidMinDuty" type="number" step="10" min="0" max="8191" value="500"></label>
+        </div>
+        <div class="pid-actions">
+          <button id="pidApplyButton" type="button">应用 PID</button>
+          <button id="pidDefaultButton" type="button">恢复默认</button>
+        </div>
+      </section>
+
+      <section class="panel raw-panel app-view" data-view="log">
+        <div class="panel-title">
+          <h2>事件流</h2>
+          <span id="packetCount">0</span>
+        </div>
+        <div id="eventLog" class="event-log"></div>
+      </section>
+    </section>
+  </main>
+
+  <nav class="mobile-nav" aria-label="手机端导航">
+    <button class="active" type="button" data-tab="status">状态</button>
+    <button type="button" data-tab="control">控制</button>
+    <button type="button" data-tab="charts">曲线</button>
+    <button type="button" data-tab="log">日志</button>
+  </nav>
+
+  <script src="app.js?v=apk-local1"></script>
+</body>
+</html>

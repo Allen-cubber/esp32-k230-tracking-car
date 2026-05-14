@@ -6,6 +6,7 @@
 
 #include "cJSON.h"
 #include "esp_log.h"
+#include "motor_control.h"
 #include "mqtt_client.h"
 #include "robot_emotion_ui.h"
 #include "vehicle_ai_control.h"
@@ -22,13 +23,16 @@ typedef enum {
     ROBOT_MQTT_TOPIC_NONE,
     ROBOT_MQTT_TOPIC_CMD_REQUEST,
     ROBOT_MQTT_TOPIC_TRACK,
+    ROBOT_MQTT_TOPIC_PID_REQUEST,
 } robot_mqtt_topic_kind_t;
 
 static esp_mqtt_client_handle_t s_client;
 static char s_request_topic[ROBOT_MQTT_TOPIC_MAX_LEN];
 static char s_ack_topic[ROBOT_MQTT_TOPIC_MAX_LEN];
+static char s_status_topic[ROBOT_MQTT_TOPIC_MAX_LEN];
 static char s_track_topic[ROBOT_MQTT_TOPIC_MAX_LEN];
 static char s_gimbal_topic[ROBOT_MQTT_TOPIC_MAX_LEN];
+static char s_pid_topic[ROBOT_MQTT_TOPIC_MAX_LEN];
 static char s_rx_buf[ROBOT_MQTT_RX_BUF_SIZE];
 static size_t s_rx_len;
 static robot_mqtt_topic_kind_t s_rx_topic_kind;
@@ -36,6 +40,7 @@ static bool s_rx_overflow;
 static portMUX_TYPE s_track_lock = portMUX_INITIALIZER_UNLOCKED;
 static robot_track_data_t s_latest_track;
 static bool s_track_available;
+static bool s_connected;
 
 static esp_err_t build_topic(char *out, size_t out_size, const char *suffix)
 {
@@ -237,6 +242,34 @@ static void handle_track_message(const char *message)
     cJSON_Delete(root);
 }
 
+static void handle_pid_message(const char *message)
+{
+    cJSON *root = cJSON_Parse(message);
+    if (root == NULL) {
+        ESP_LOGW(TAG, "pid JSON parse failed: %s", message);
+        publish_ack("", "set_pid", false, "json_parse_failed");
+        return;
+    }
+
+    const char *request_id = json_get_string(root, "request_id", "");
+    motor_pid_config_t current;
+    motor_get_pid_config(&current);
+
+    motor_pid_config_t next = {
+        .target_max_pps = json_get_float(root, "target_max_pps", current.target_max_pps),
+        .kp = json_get_float(root, "kp", current.kp),
+        .ki = json_get_float(root, "ki", current.ki),
+        .kd = json_get_float(root, "kd", current.kd),
+        .integral_limit = json_get_float(root, "integral_limit", current.integral_limit),
+        .correction_limit = json_get_float(root, "correction_limit", current.correction_limit),
+        .min_duty = (uint32_t)json_get_float(root, "min_duty", (float)current.min_duty),
+    };
+
+    esp_err_t ret = motor_set_pid_config(&next);
+    publish_ack(request_id, "set_pid", ret == ESP_OK, ret == ESP_OK ? "" : esp_err_to_name(ret));
+    cJSON_Delete(root);
+}
+
 static robot_mqtt_topic_kind_t get_topic_kind(const char *topic, int topic_len)
 {
     if (topic_matches(topic, topic_len, s_request_topic)) {
@@ -244,6 +277,9 @@ static robot_mqtt_topic_kind_t get_topic_kind(const char *topic, int topic_len)
     }
     if (topic_matches(topic, topic_len, s_track_topic)) {
         return ROBOT_MQTT_TOPIC_TRACK;
+    }
+    if (topic_matches(topic, topic_len, s_pid_topic)) {
+        return ROBOT_MQTT_TOPIC_PID_REQUEST;
     }
     return ROBOT_MQTT_TOPIC_NONE;
 }
@@ -292,15 +328,19 @@ static void mqtt_event_handler(void *handler_args,
 
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED: {
+        s_connected = true;
         ESP_LOGI(TAG, "connected to broker");
         int msg_id = esp_mqtt_client_subscribe(s_client, s_request_topic, 1);
         ESP_LOGI(TAG, "subscribed topic=%s msg_id=%d", s_request_topic, msg_id);
         msg_id = esp_mqtt_client_subscribe(s_client, s_track_topic, 0);
         ESP_LOGI(TAG, "subscribed topic=%s msg_id=%d", s_track_topic, msg_id);
+        msg_id = esp_mqtt_client_subscribe(s_client, s_pid_topic, 1);
+        ESP_LOGI(TAG, "subscribed topic=%s msg_id=%d", s_pid_topic, msg_id);
         break;
     }
 
     case MQTT_EVENT_DISCONNECTED:
+        s_connected = false;
         ESP_LOGW(TAG, "disconnected from broker");
         break;
 
@@ -311,6 +351,9 @@ static void mqtt_event_handler(void *handler_args,
                 handle_request_message(s_rx_buf);
             } else if (s_rx_topic_kind == ROBOT_MQTT_TOPIC_TRACK) {
                 handle_track_message(s_rx_buf);
+            } else if (s_rx_topic_kind == ROBOT_MQTT_TOPIC_PID_REQUEST) {
+                ESP_LOGI(TAG, "pid payload=%s", s_rx_buf);
+                handle_pid_message(s_rx_buf);
             }
         }
         break;
@@ -345,6 +388,12 @@ esp_err_t robot_mqtt_client_start(void)
         return ret;
     }
 
+    ret = build_topic(s_status_topic, sizeof(s_status_topic), "status");
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "status topic too long");
+        return ret;
+    }
+
     ret = build_topic(s_track_topic, sizeof(s_track_topic), "track");
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "track topic too long");
@@ -354,6 +403,12 @@ esp_err_t robot_mqtt_client_start(void)
     ret = build_topic(s_gimbal_topic, sizeof(s_gimbal_topic), "gimbal/request");
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "gimbal topic too long");
+        return ret;
+    }
+
+    ret = build_topic(s_pid_topic, sizeof(s_pid_topic), "pid/request");
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "pid topic too long");
         return ret;
     }
 
@@ -392,12 +447,14 @@ esp_err_t robot_mqtt_client_start(void)
     }
 
     ESP_LOGI(TAG,
-             "started uri=%s request=%s ack=%s track=%s gimbal=%s",
+             "started uri=%s request=%s ack=%s status=%s track=%s gimbal=%s pid=%s",
              CONFIG_ROBOT_MQTT_BROKER_URI,
              s_request_topic,
              s_ack_topic,
+             s_status_topic,
              s_track_topic,
-             s_gimbal_topic);
+             s_gimbal_topic,
+             s_pid_topic);
     return ESP_OK;
 }
 
@@ -451,6 +508,92 @@ esp_err_t robot_mqtt_client_send_gimbal_command(const char *action,
     return msg_id >= 0 ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t robot_mqtt_client_publish_status(const robot_status_telemetry_t *status)
+{
+    if (s_client == NULL || !s_connected || status == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *ultrasonic = cJSON_CreateObject();
+    cJSON *mpu = cJSON_CreateObject();
+    cJSON *track = cJSON_CreateObject();
+    cJSON *motion = cJSON_CreateObject();
+    cJSON *control = cJSON_CreateObject();
+    cJSON *pid = cJSON_CreateObject();
+    if (root == NULL || ultrasonic == NULL || mpu == NULL ||
+        track == NULL || motion == NULL || control == NULL || pid == NULL) {
+        cJSON_Delete(root);
+        cJSON_Delete(ultrasonic);
+        cJSON_Delete(mpu);
+        cJSON_Delete(track);
+        cJSON_Delete(motion);
+        cJSON_Delete(control);
+        cJSON_Delete(pid);
+        return ESP_ERR_NO_MEM;
+    }
+
+    cJSON_AddNumberToObject(root, "uptime_ms", status->uptime_ms);
+    cJSON_AddStringToObject(root, "state", status->state != NULL ? status->state : "UNKNOWN");
+    cJSON_AddBoolToObject(root, "manual_mode", status->manual_mode);
+    cJSON_AddBoolToObject(root, "obstacle_hold", status->obstacle_hold);
+
+    cJSON_AddNumberToObject(ultrasonic, "distance_cm", status->ultrasonic_cm);
+    cJSON_AddItemToObject(root, "ultrasonic", ultrasonic);
+
+    cJSON_AddBoolToObject(mpu, "ready", status->pose_ready);
+    cJSON_AddNumberToObject(mpu, "yaw_deg", status->yaw_deg);
+    cJSON_AddNumberToObject(mpu, "yaw_rate_dps", status->yaw_rate_dps);
+    cJSON_AddItemToObject(root, "mpu", mpu);
+
+    cJSON_AddBoolToObject(track, "seen", status->track_seen);
+    cJSON_AddBoolToObject(track, "valid", status->track.valid);
+    cJSON_AddNumberToObject(track, "pan_deg", status->track.pan_deg);
+    cJSON_AddNumberToObject(track, "tilt_deg", status->track.tilt_deg);
+    cJSON_AddNumberToObject(track, "x", status->track.face_x);
+    cJSON_AddNumberToObject(track, "y", status->track.face_y);
+    cJSON_AddNumberToObject(track, "w", status->track.face_w);
+    cJSON_AddNumberToObject(track, "h", status->track.face_h);
+    cJSON_AddItemToObject(root, "track", track);
+
+    cJSON_AddNumberToObject(motion, "left_target_cmd", status->left_target_cmd);
+    cJSON_AddNumberToObject(motion, "right_target_cmd", status->right_target_cmd);
+    cJSON_AddNumberToObject(motion, "left_measured_pps", status->left_measured_pps);
+    cJSON_AddNumberToObject(motion, "right_measured_pps", status->right_measured_pps);
+    cJSON_AddNumberToObject(motion, "left_applied_duty", status->left_applied_duty);
+    cJSON_AddNumberToObject(motion, "right_applied_duty", status->right_applied_duty);
+    cJSON_AddNumberToObject(motion, "left_encoder_count", status->left_encoder_count);
+    cJSON_AddNumberToObject(motion, "right_encoder_count", status->right_encoder_count);
+    cJSON_AddItemToObject(root, "motion", motion);
+
+    cJSON_AddNumberToObject(control, "face_size", status->face_size);
+    cJSON_AddNumberToObject(control, "target_yaw_deg", status->target_yaw_deg);
+    cJSON_AddNumberToObject(control, "heading_error_deg", status->heading_error_deg);
+    cJSON_AddNumberToObject(control, "turn_output", status->turn_output);
+    cJSON_AddNumberToObject(control, "target_speed_cmd", status->target_speed_cmd);
+    cJSON_AddNumberToObject(control, "base_speed_cmd", status->base_speed_cmd);
+    cJSON_AddItemToObject(root, "control", control);
+
+    cJSON_AddNumberToObject(pid, "target_max_pps", status->motor_pid.target_max_pps);
+    cJSON_AddNumberToObject(pid, "kp", status->motor_pid.kp);
+    cJSON_AddNumberToObject(pid, "ki", status->motor_pid.ki);
+    cJSON_AddNumberToObject(pid, "kd", status->motor_pid.kd);
+    cJSON_AddNumberToObject(pid, "integral_limit", status->motor_pid.integral_limit);
+    cJSON_AddNumberToObject(pid, "correction_limit", status->motor_pid.correction_limit);
+    cJSON_AddNumberToObject(pid, "min_duty", status->motor_pid.min_duty);
+    cJSON_AddItemToObject(root, "pid", pid);
+
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (text == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    int msg_id = esp_mqtt_client_publish(s_client, s_status_topic, text, 0, 0, 0);
+    cJSON_free(text);
+    return msg_id >= 0 ? ESP_OK : ESP_FAIL;
+}
+
 #else
 
 esp_err_t robot_mqtt_client_start(void)
@@ -469,6 +612,12 @@ esp_err_t robot_mqtt_client_send_gimbal_command(const char *action,
                                                 int32_t tilt_delta_deg,
                                                 uint32_t duration_ms)
 {
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t robot_mqtt_client_publish_status(const robot_status_telemetry_t *status)
+{
+    (void)status;
     return ESP_ERR_INVALID_STATE;
 }
 

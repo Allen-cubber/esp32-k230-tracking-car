@@ -1,0 +1,19 @@
+{
+  "name": "追踪小车实时状态",
+  "short_name": "小车状态",
+  "description": "ESP32 + K230 追踪小车手机端状态监控与快速控制。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e1116",
+  "theme_color": "#0e1116",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

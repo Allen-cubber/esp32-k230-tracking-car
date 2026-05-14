@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 
 #include "deepseek_client.h"
+#include "encoder.h"
 #include "motor_control.h"
 #include "mpu6050.h"
 #include "robot_emotion_ui.h"
@@ -27,31 +28,31 @@
 
 #define FOLLOW_PAN_CENTER_DEG        90.0f
 #define FOLLOW_TILT_CENTER_DEG       90.0f
-#define FOLLOW_PAN_DEADBAND_DEG       4.0f
-#define FOLLOW_PID_KP                26.0f
+#define FOLLOW_PAN_DEADBAND_DEG       2.0f
+#define FOLLOW_PID_KP                42.0f
 #define FOLLOW_PID_KI                 0.0f
 #define FOLLOW_PID_KD                0.0f
 #define FOLLOW_PID_INTEGRAL_LIMIT   600.0f
-#define FOLLOW_HEADING_FILTER_ALPHA   0.35f
+#define FOLLOW_HEADING_FILTER_ALPHA   0.55f
 #define FOLLOW_MIN_TURN_OUTPUT      520.0f
-#define FOLLOW_SPEED_PID_KP          108.0f
+#define FOLLOW_SPEED_PID_KP          150.0f
 #define FOLLOW_SPEED_PID_KI           0.6f
 #define FOLLOW_SPEED_PID_KD           0.0f
 #define FOLLOW_SPEED_INTEGRAL_LIMIT 800.0f
-#define FOLLOW_FORWARD_ACCEL_LIMIT  2600.0f
+#define FOLLOW_FORWARD_ACCEL_LIMIT  6000.0f
 #define FOLLOW_FORWARD_DECEL_LIMIT  3600.0f
 #define FOLLOW_TURN_SLOWDOWN_START_DEG 12.0f
 #define FOLLOW_TURN_SLOWDOWN_END_DEG 36.0f
 #define FOLLOW_TURN_MIN_FORWARD_SCALE 0.35f
 #define FOLLOW_FACE_TARGET_SIZE_PX  145.0f
 #define FOLLOW_FACE_SIZE_DEADBAND_PX  8.0f
-#define FOLLOW_FACE_FILTER_ALPHA      0.25f
+#define FOLLOW_FACE_FILTER_ALPHA      0.45f
 #define FOLLOW_MIN_SPEED            750
 #define FOLLOW_MAX_SPEED           5000
-#define FOLLOW_MAX_TURN_OUTPUT     2800.0f
+#define FOLLOW_MAX_TURN_OUTPUT     3600.0f
 #define FOLLOW_TRACK_TIMEOUT_MS     800
-#define FOLLOW_FACE_STOP_WIDTH_PX   170.0f
-#define FOLLOW_FACE_STOP_HEIGHT_PX  170.0f
+#define FOLLOW_FACE_STOP_WIDTH_PX   200.0f
+#define FOLLOW_FACE_STOP_HEIGHT_PX  200.0f
 #define FOLLOW_TILT_MIN_DEG          50.0f
 #define FOLLOW_TILT_MAX_DEG         130.0f
 #define FOLLOW_DEBUG_LOG_PERIOD_MS  200
@@ -59,10 +60,33 @@
 #define OBSTACLE_CLEAR_DISTANCE_CM   22.0f
 #define OBSTACLE_SAMPLE_PERIOD_MS    80
 
+#ifndef CONFIG_ROBOT_MQTT_STATUS_PERIOD_MS
+#define CONFIG_ROBOT_MQTT_STATUS_PERIOD_MS 200
+#endif
+
 typedef struct {
     float integral;
     float prev_error;
 } follow_pid_state_t;
+
+typedef struct {
+    float face_size;
+    float heading_error_deg;
+    float turn_output;
+    int32_t target_speed;
+    int32_t base_speed;
+} follow_control_status_t;
+
+typedef struct {
+    const char *state;
+    robot_track_data_t track;
+    bool track_seen;
+    mpu6050_pose_t pose;
+    bool pose_ready;
+    float ultrasonic_cm;
+    follow_control_status_t follow;
+    float target_yaw_deg;
+} status_snapshot_t;
 
 static const char *TAG = "wifi station";
 static const char *POSE_TAG = "pose";
@@ -81,6 +105,12 @@ static bool s_obstacle_hold = false;
 static float s_ultrasonic_distance_cm = -1.0f;
 static TickType_t s_last_ultrasonic_sample_tick = 0;
 static TickType_t s_last_debug_log_tick = 0;
+static follow_control_status_t s_follow_status = {0};
+static status_snapshot_t s_status_snapshot = {
+    .state = "BOOT",
+    .ultrasonic_cm = -1.0f,
+};
+static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static float clampf_local(float value, float min_value, float max_value)
 {
@@ -126,6 +156,7 @@ static void follow_pid_reset(void)
     s_forward_speed_cmd = 0.0f;
     s_face_filter_ready = false;
     s_target_yaw_ready = false;
+    s_follow_status = (follow_control_status_t){0};
 }
 
 static bool follow_face_too_large(const robot_track_data_t *track)
@@ -314,6 +345,79 @@ static void follow_log_control_debug(const robot_track_data_t *track,
              (long)right_speed);
 }
 
+static void update_status_snapshot(const char *state,
+                                   const robot_track_data_t *track,
+                                   bool track_seen,
+                                   const mpu6050_pose_t *pose,
+                                   bool pose_ready,
+                                   float ultrasonic_cm)
+{
+    taskENTER_CRITICAL(&s_status_lock);
+    s_status_snapshot.state = state;
+    s_status_snapshot.track = track != NULL ? *track : (robot_track_data_t){0};
+    s_status_snapshot.track_seen = track_seen;
+    s_status_snapshot.pose = pose != NULL ? *pose : (mpu6050_pose_t){0};
+    s_status_snapshot.pose_ready = pose_ready;
+    s_status_snapshot.ultrasonic_cm = ultrasonic_cm;
+    s_status_snapshot.follow = s_follow_status;
+    s_status_snapshot.target_yaw_deg = s_target_yaw_deg;
+    taskEXIT_CRITICAL(&s_status_lock);
+}
+
+static void status_publish_task(void *arg)
+{
+    (void)arg;
+    const TickType_t period_ticks = pdMS_TO_TICKS(CONFIG_ROBOT_MQTT_STATUS_PERIOD_MS);
+
+    while (true) {
+        vTaskDelay(period_ticks);
+
+        status_snapshot_t snapshot;
+        taskENTER_CRITICAL(&s_status_lock);
+        snapshot = s_status_snapshot;
+        taskEXIT_CRITICAL(&s_status_lock);
+
+        motor_status_t motor_status = {0};
+        motor_pid_config_t pid_config = {0};
+        int32_t left_encoder_count = 0;
+        int32_t right_encoder_count = 0;
+
+        motor_get_status(&motor_status);
+        motor_get_pid_config(&pid_config);
+        (void)encoder_get_counts(&left_encoder_count, &right_encoder_count);
+
+        robot_status_telemetry_t status = {
+            .uptime_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+            .state = snapshot.state,
+            .manual_mode = vehicle_ai_control_is_manual_mode(),
+            .obstacle_hold = s_obstacle_hold,
+            .ultrasonic_cm = snapshot.ultrasonic_cm,
+            .pose_ready = snapshot.pose_ready,
+            .yaw_deg = snapshot.pose_ready ? snapshot.pose.yaw_deg : 0.0f,
+            .yaw_rate_dps = snapshot.pose_ready ? snapshot.pose.yaw_rate_dps : 0.0f,
+            .track_seen = snapshot.track_seen,
+            .track = snapshot.track,
+            .left_target_cmd = motor_status.left_target_cmd,
+            .right_target_cmd = motor_status.right_target_cmd,
+            .left_measured_pps = motor_status.left_measured_pps,
+            .right_measured_pps = motor_status.right_measured_pps,
+            .left_applied_duty = motor_status.left_applied_duty,
+            .right_applied_duty = motor_status.right_applied_duty,
+            .left_encoder_count = left_encoder_count,
+            .right_encoder_count = right_encoder_count,
+            .face_size = snapshot.follow.face_size,
+            .target_yaw_deg = snapshot.target_yaw_deg,
+            .heading_error_deg = snapshot.follow.heading_error_deg,
+            .turn_output = snapshot.follow.turn_output,
+            .target_speed_cmd = snapshot.follow.target_speed,
+            .base_speed_cmd = snapshot.follow.base_speed,
+            .motor_pid = pid_config,
+        };
+
+        (void)robot_mqtt_client_publish_status(&status);
+    }
+}
+
 static float follow_calculate_heading_error(const robot_track_data_t *track,
                                             const mpu6050_pose_t *pose,
                                             bool pose_ready)
@@ -338,11 +442,11 @@ static float follow_calculate_heading_error(const robot_track_data_t *track,
     return normalize_angle_delta(s_target_yaw_deg - pose->yaw_deg);
 }
 
-static void follow_target_control(const robot_track_data_t *track,
-                                  const mpu6050_pose_t *pose,
-                                  bool pose_ready,
-                                  float ultrasonic_cm,
-                                  float dt_s)
+static const char *follow_target_control(const robot_track_data_t *track,
+                                         const mpu6050_pose_t *pose,
+                                         bool pose_ready,
+                                         float ultrasonic_cm,
+                                         float dt_s)
 {
     float heading_error_deg;
     float effective_error_deg;
@@ -359,7 +463,7 @@ static void follow_target_control(const robot_track_data_t *track,
         robot_emotion_ui_set_status(ROBOT_EMOTION_CONFUSED, "LOST");
         follow_pid_reset();
         motor_stop();
-        return;
+        return "LOST";
     }
 
     if (follow_face_too_large(track)) {
@@ -372,7 +476,7 @@ static void follow_target_control(const robot_track_data_t *track,
         robot_emotion_ui_set_status(ROBOT_EMOTION_ALERT, "TOO CLOSE");
         follow_pid_reset();
         motor_stop();
-        return;
+        return "TOO_CLOSE";
     }
 
     if (follow_tilt_out_of_range(track->tilt_deg)) {
@@ -384,7 +488,7 @@ static void follow_target_control(const robot_track_data_t *track,
         robot_emotion_ui_set_status(ROBOT_EMOTION_ALERT, "TILT LIMIT");
         follow_pid_reset();
         motor_stop();
-        return;
+        return "TILT_LIMIT";
     }
 
     face_size = follow_update_face_size_filter(track);
@@ -416,6 +520,13 @@ static void follow_target_control(const robot_track_data_t *track,
     base_speed = follow_apply_forward_accel_limit(target_speed, dt_s);
     left_speed = clamp_speed_local((int32_t)(base_speed - turn_output));
     right_speed = clamp_speed_local((int32_t)(base_speed + turn_output));
+    s_follow_status = (follow_control_status_t){
+        .face_size = face_size,
+        .heading_error_deg = effective_error_deg,
+        .turn_output = turn_output,
+        .target_speed = target_speed,
+        .base_speed = base_speed,
+    };
 
     follow_log_control_debug(track,
                              pose,
@@ -431,6 +542,7 @@ static void follow_target_control(const robot_track_data_t *track,
 
     motor_set_differential(left_speed, right_speed);
     robot_emotion_ui_set_status(ROBOT_EMOTION_HAPPY, "FOLLOW");
+    return "FOLLOW";
 }
 
 void app_main(void)
@@ -495,6 +607,9 @@ void app_main(void)
     ret = robot_mqtt_client_start();
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "after robot_mqtt_client_start");
+        if (xTaskCreate(status_publish_task, "status_pub", 4096, NULL, 5, NULL) != pdPASS) {
+            ESP_LOGW(TAG, "failed to start status publish task");
+        }
     } else {
         ESP_LOGE(TAG, "robot_mqtt_client_start failed: %s", esp_err_to_name(ret));
     }
@@ -533,6 +648,7 @@ void app_main(void)
         robot_track_data_t track = {0};
         bool pose_ready = false;
         float ultrasonic_cm = obstacle_update_distance();
+        const char *state = "BOOT";
 
         vehicle_ai_control_update();
 
@@ -567,19 +683,29 @@ void app_main(void)
         }
 
         if (obstacle_guard_should_stop(ultrasonic_cm)) {
+            state = "OBSTACLE";
             robot_emotion_ui_set_status(ROBOT_EMOTION_ALERT, "OBSTACLE");
             ESP_LOGD(CTRL_TAG, "obstacle hold, ultrasonic=%.2f cm", ultrasonic_cm);
         } else if (vehicle_ai_control_is_manual_mode()) {
+            state = "HOLD";
             robot_emotion_ui_set_status(ROBOT_EMOTION_NEUTRAL, "HOLD");
             ESP_LOGD(CTRL_TAG, "AI manual mode active, follow control paused");
         } else if (last_track_tick == 0) {
+            state = "WAIT_TRACK";
             robot_emotion_ui_set_status(ROBOT_EMOTION_CONFUSED, "WAIT TRACK");
             follow_pid_reset();
             motor_stop();
             ESP_LOGI(CTRL_TAG, "waiting first track packet");
         } else {
-            follow_target_control(&last_track, &pose, pose_ready, ultrasonic_cm, sample_dt_s);
+            state = follow_target_control(&last_track, &pose, pose_ready, ultrasonic_cm, sample_dt_s);
         }
+
+        update_status_snapshot(state,
+                               &last_track,
+                               last_track_tick != 0,
+                               &pose,
+                               pose_ready,
+                               ultrasonic_cm);
 
         vTaskDelay(sample_delay);
     }

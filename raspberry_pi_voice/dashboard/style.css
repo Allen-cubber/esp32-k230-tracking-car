@@ -1,0 +1,549 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: #171c23;
+  --panel-2: #1f2630;
+  --line: #303a46;
+  --text: #eef3f7;
+  --muted: #9aa8b5;
+  --accent: #42d6a4;
+  --warn: #ffd166;
+  --danger: #ff5c7a;
+  --blue: #6bb8ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.shell {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.mobile-nav {
+  display: none;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 0 18px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 26px;
+  font-weight: 750;
+}
+
+h2 {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.topbar p,
+.hint,
+.panel-title span,
+.label,
+small {
+  color: var(--muted);
+}
+
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: #11161d;
+}
+
+.badge.online {
+  color: var(--accent);
+  border-color: rgba(66, 214, 164, 0.45);
+  background: rgba(66, 214, 164, 0.09);
+}
+
+.badge.warn {
+  color: var(--warn);
+  border-color: rgba(255, 209, 102, 0.45);
+  background: rgba(255, 209, 102, 0.09);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1.3fr repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.metric,
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.metric {
+  min-height: 112px;
+  padding: 16px;
+}
+
+.metric.primary {
+  background: #14231f;
+  border-color: rgba(66, 214, 164, 0.35);
+}
+
+.metric .label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.metric strong {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 38px;
+  font-size: 30px;
+}
+
+.metric small {
+  font-size: 14px;
+}
+
+.bar {
+  height: 8px;
+  margin-top: 14px;
+  border-radius: 999px;
+  background: #2b333d;
+  overflow: hidden;
+}
+
+.bar span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.18s ease, background 0.18s ease;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.9fr);
+  gap: 12px;
+}
+
+.panel {
+  min-width: 0;
+  padding: 16px;
+}
+
+.panel-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.telemetry-panel canvas,
+.pose-panel canvas {
+  width: 100%;
+  display: block;
+  border-radius: 6px;
+  background: #10151b;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.line {
+  display: inline-block;
+  width: 24px;
+  height: 3px;
+  margin-right: 7px;
+  vertical-align: middle;
+  border-radius: 999px;
+}
+
+.line.speed {
+  background: var(--accent);
+}
+
+.line.distance {
+  background: var(--warn);
+}
+
+.line.yaw {
+  background: var(--blue);
+}
+
+.pose-grid {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.dial {
+  text-align: center;
+}
+
+.dial canvas {
+  max-width: 180px;
+  margin: 0 auto 6px;
+  aspect-ratio: 1;
+}
+
+.angles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.angles p {
+  min-height: 68px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.angles span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.angles b {
+  font-size: 22px;
+}
+
+.control-panel,
+.raw-panel {
+  min-height: 260px;
+}
+
+.control-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.control-pad button:first-child,
+.control-pad button:last-child {
+  grid-column: 2;
+}
+
+button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: rgba(107, 184, 255, 0.65);
+  background: #273140;
+}
+
+button.danger {
+  color: #fff;
+  border-color: rgba(255, 92, 122, 0.7);
+  background: #7c1d31;
+}
+
+button.ghost {
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--accent);
+  border-color: rgba(66, 214, 164, 0.45);
+  background: rgba(66, 214, 164, 0.09);
+}
+
+.mode-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.slider {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  color: var(--muted);
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.pid-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pid-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pid-grid input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: #10151b;
+}
+
+.pid-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.event-log {
+  height: 205px;
+  overflow: auto;
+  padding-right: 4px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  color: #c6d2df;
+}
+
+.event {
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  word-break: break-word;
+}
+
+@media (max-width: 980px) {
+  .topbar,
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    display: grid;
+  }
+
+  .summary-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  body {
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  .shell {
+    padding: calc(12px + env(safe-area-inset-top)) 12px calc(78px + env(safe-area-inset-bottom));
+  }
+
+  .topbar {
+    gap: 10px;
+    padding: 4px 0 12px;
+  }
+
+  h1 {
+    font-size: 22px;
+  }
+
+  .topbar p {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+
+  .status-strip {
+    justify-content: flex-start;
+    gap: 6px;
+  }
+
+  .badge {
+    min-height: 28px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .summary-grid,
+  .pose-grid,
+  .angles,
+  .mode-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .layout {
+    display: block;
+  }
+
+  .summary-grid {
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .metric {
+    min-height: 94px;
+    padding: 12px;
+  }
+
+  .metric strong {
+    min-height: 32px;
+    font-size: 25px;
+  }
+
+  .panel {
+    margin-bottom: 12px;
+    padding: 12px;
+  }
+
+  .app-view {
+    display: none;
+  }
+
+  .app-view.active {
+    display: grid;
+  }
+
+  section.panel.app-view.active {
+    display: block;
+  }
+
+  .telemetry-panel canvas {
+    height: 240px;
+  }
+
+  .pose-grid {
+    gap: 10px;
+  }
+
+  .dial canvas {
+    max-width: 150px;
+  }
+
+  .angles {
+    gap: 8px;
+  }
+
+  .angles p {
+    min-height: 60px;
+  }
+
+  .control-panel,
+  .raw-panel {
+    min-height: auto;
+  }
+
+  .control-pad {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .control-pad button {
+    min-height: 62px;
+    font-size: 18px;
+  }
+
+  .mode-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-actions button {
+    min-height: 52px;
+  }
+
+  .pid-grid,
+  .pid-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .pid-grid input,
+  .pid-actions button {
+    min-height: 50px;
+  }
+
+  .event-log {
+    height: calc(100dvh - 190px);
+    min-height: 320px;
+  }
+
+  .mobile-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: rgba(14, 17, 22, 0.96);
+    backdrop-filter: blur(12px);
+  }
+
+  .mobile-nav button {
+    min-height: 44px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+
+  .mobile-nav button.active {
+    color: #07120f;
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+}

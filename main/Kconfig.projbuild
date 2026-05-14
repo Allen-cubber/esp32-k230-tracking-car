@@ -107,6 +107,14 @@ menu "Example Configuration"
         help
             MQTT keepalive interval.
 
+    config ROBOT_MQTT_STATUS_PERIOD_MS
+        int "Robot MQTT status publish period (ms)"
+        depends on ROBOT_MQTT_ENABLE
+        range 50 5000
+        default 200
+        help
+            Period for publishing car telemetry to qrs/<device>/status.
+
     config ROBOT_LCD_ENABLE
         bool "Enable ST7735 LVGL emotion LCD"
         default y

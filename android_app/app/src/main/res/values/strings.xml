@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">&#x5c0f;&#x8f66;&#x63a7;&#x5236;&#x53f0;</string>
+    <string name="default_dashboard_url">http://127.0.0.1:8081/?wsPort=8765</string>
+</resources>
